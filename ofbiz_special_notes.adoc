@@ -3,7 +3,7 @@
 
 == Introduction
 
-This short manual explains a simple technique for developing with OFBiz in a simple 
+This short manual explains a technique for developing with OFBiz in a simple 
 ( take care, simple does not mean better ) way using a POJO 
 - which is clear and pure OO ( Object Oriented ) paradigm - rather than using Java Map or GenericValue object.
 
