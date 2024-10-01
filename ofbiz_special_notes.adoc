@@ -1,0 +1,370 @@
+= Simple Technique For Developing With OFBiz
+
+
+== Introduction
+
+This short manual explains a simple technique for developing with OFBiz in a simple 
+( take care, simple does not mean better ) way using a POJO 
+- which is clear and pure OO ( Object Oriented ) paradigm - rather than using Java Map or GenericValue object.
+
+
+== Problem
+* Working with Map or GenericValue is very complex, specially for the newcomers to OFBiz.
+* Unplanned business logic implementation can lead to scattering business logic everywhere.
+
+
+
+== Current Programming/Implementation Flow
+1. Flow from view to database ( service & delegator are not mentioned for clarity).
+* View -> Map -> Generic Value -> Database
+* View -> Map -> XXX(Operations on map) -> Generic Value -> Database
+* View -> Map -> Generic Value -> XXX(Operations on GenericValue)  -> Database
+2. Flow from database to view ( service & delegator  are not mentioned for clarity ).
+* Database -> GenericValue -> View
+* Database -> GenericValue -> XXX(Operations on GenericValue ) -> View
+* Database -> GenericValue -> Map -> View
+* Database -> GenericValue -> Map -> XXX(Operations on Map) -> View
+
+== Suggested Solution
+=== View Points.
+* Service methods should not contain business logic.
+* Service methods better to function as if it were an orchestrator service.
+* Introduction of an intermediary  POJO object that can be primarily used for business logic ( in a Domain Layer ),
+  which will be easier to use than Map or GenericValue.
+* Using a Mapper/Converter for mapping between Java Map <==> POJO ( For presentation layer ).
+* Using a Mapper/Converter for mapping between GenericValue <==> POJO ( For data access layer ).
+* A Repository/DAO which has interfaces for POJO only and hides the complexity of using Delegator and GenericValue  
+
+=== The New Programming/Implementation Flow 
+1. Flow from view to database.
+* View -> Map -> MapMapper -> POJO XXX(Operations on POJO) -> Repository -> GenericValueMapper -> GenericValue/Delegator -> Database
+2. Flow from database to view
+* Database -> GenericValue/Delegator -> GenericValueMapper -> Repository  -> POJO XXX(Operations on POJO) -> View.
+* Database -> GenericValue/Delegator -> GenericValueMapper -> Repository  -> POJO XXX(Operations on POJO) -> MapMapper -> Map -> View.
+
+=== Implementation Example (Show me the code). 
+==== 1. (Domain) Intermediary POJO Object.
+===== a). Role. 
+The POJO class role is more like JPA Entity.
+
+===== b). Ofbiz EntityModel ( entitymodel.xml )
+
+[source,xml]
+----
+   <entity entity-name="ExampleType" package-name="org.apache.ofbiz.example.example"
+            title="Example Type Entity">
+        <field name="exampleTypeId" type="id"></field>
+        <field name="parentTypeId" type="id"></field>
+        <field name="description" type="description"></field>
+        <prim-key field="exampleTypeId"/>
+        <relation type="one" fk-name="EXMPLTP_PAR" rel-entity-name="ExampleType">
+            <key-map field-name="parentTypeId" rel-field-name="exampleTypeId"/>
+        </relation>
+    </entity>
+----
+
+===== c). POJO class.
+
+[source,java]
+----
+
+package org.apache.ofbiz.example.domain;
+
+public class ExampleType {
+	
+	private String exampleTypeId; // <1>
+	
+	// @Column(name="parentType") <2>
+	private String parentTypeId;
+	
+	// private String desc <3>
+	private String description;
+	
+	// getters and setters...
+	
+}
+----
+
+<1> It's better to name the fields same as the entitymodel.xml fields.
+<2> Also you are free to code a mapper that uses reflection with annotation. 
+<3> Of course you can use different field names than entitymodel.xml ( see specific mapping section ).
+
+
+==== 2. Mapping Layer 
+===== a). Generic Mapping.
+* It has to very basic and generic enough to be used to map any POJO, or developer use ready libraries like MapStruct .
+
+* For simplicity, both Mapping to Java Map, and GenericValue are in the same class, of course it can be 
+split in to two classes.
+
+[source,java]
+----
+package org.apache.ofbiz.base.mapping;
+
+import java.util.Map;
+
+import org.apache.ofbiz.entity.GenericValue;
+
+//T is your POJO class type
+public class GenericMapper<T> {
+
+	private static String MODULE = GenericMapper.class.getName();
+	
+	public void fromMap(T dest, Map<String,Object> src) { // <1>
+		//Your implementation code goes here...
+	}
+	
+	public void toMap(Map<String,Object> dest, T src){ // <2>
+		//Your implementation code goes here...
+	}
+	
+	public void fromGenericValue(T dest, GenericValue src) {  // <3>
+		//Your implementation code goes here...	
+	}
+	
+	public void toGenericValue(GenericValue dest, T src){ // <4>
+		//Your implementation code goes here...
+	}
+
+}
+
+----
+<1> Mapping Map key->value to POJO fields.
+<2> Mapping POJO fields to Map key->value. 
+<3> Mapping GenericValue key->value to POJO fields.
+<4> Mapping POJO fields to GenericValue key->value.
+
+
+===== b). Specific Mapping.
+Developers are free to extend and add more functionality for mapping.
+
+
+[source,java]
+----
+package org.apache.ofbiz.example.mappers;
+
+import org.apache.ofbiz.base.mapping.GenericMapper;
+import org.apache.ofbiz.entity.GenericValue;
+import org.apache.ofbiz.example.domain.ExampleType;
+
+public class ExampleTypeMapper extends GenericMapper<ExampleType> { // <1>
+
+	// Here we can add other/override mapping methods,
+	// For reason <2>
+	// Or for reason <3>
+	@Override
+	public void fromGenericValue(ExampleType dest, GenericValue src) {
+		dest.setExampleTypeId(src.getString("exampleTypeId"));
+		dest.setDescription(src.getString("description"));
+		dest.setParentTypeId(src.getString("parentTypeId"));
+	}
+}
+
+
+----
+
+<1> Developers are free to extend GenericMapper, they can do their own mapping as they wish.
+<2> Developer does not want to use reflection.
+<3> POJO contains field names that differs from xml entity field names. 
+
+
+
+
+==== 3. Repository Layer.
+* Repository/DAO can be used for POJO as usual.
+* It Also has the same options as mapping generic/specific.
+
+===== a). Generic Repository
+
+[source,java]
+----
+package org.apache.ofbiz.entity.repository;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import org.apache.ofbiz.base.mapping.GenericMapper;
+import org.apache.ofbiz.base.util.Debug;
+import org.apache.ofbiz.entity.Delegator;
+import org.apache.ofbiz.entity.GenericEntityException;
+import org.apache.ofbiz.entity.GenericValue;
+import org.apache.ofbiz.entity.condition.EntityCondition;
+import org.apache.ofbiz.entity.util.EntityQuery;
+
+//T is your POJO class type
+public class GenericRepository<T> {
+	
+	private static final String MODULE = GenericRepository.class.getName();
+	protected final Delegator delegator;
+	protected final GenericMapper<T> mapper;
+	protected final String modelEntity;
+	protected final Class<T> targetClass;
+	
+	
+	public GenericRepository(Class<T> targetClass, String modelEntity, 
+			Delegator delegator, GenericMapper<T> mapper) {
+		this.modelEntity = modelEntity;
+		this.delegator = delegator;
+		this.mapper = mapper;
+		this.targetClass = targetClass;
+	}
+	
+	private T createInstance() {
+		
+		try {
+			return this.targetClass.getConstructor().newInstance();
+			
+		} catch (Exception e) {
+			Debug.log(e,e.getMessage(), MODULE);
+		} 
+		return null;
+	}
+	
+	public Optional<T> findOne(EntityCondition ec){
+		try {
+			var found  = EntityQuery.use(delegator).from(this.modelEntity)
+			.where(ec).queryOne();
+			if(found != null) {
+				var target = this.createInstance();
+				this.mapper.fromGenericValue(target,found);
+				return Optional.of(target);
+			}
+		} catch (GenericEntityException e) {
+			Debug.log(e,e.getMessage(), MODULE);
+		}
+		return Optional.empty();
+	}
+	
+	public List<T> findMany(EntityCondition ec){
+		var data = new ArrayList<T>();
+		try {
+			var found = EntityQuery.use(delegator).from(this.modelEntity)
+					.where(ec).queryList();
+			if(found!=null) {
+				found.forEach(x -> { 
+					var val = createInstance();
+					this.mapper.fromGenericValue(val, x);
+					data.add(val);
+					
+				});
+			}
+		} catch (GenericEntityException e) {
+			Debug.log(e,e.getMessage(), MODULE);
+		}
+		return data;
+		
+	}
+	
+	public List<T> findAll(){
+		
+		var data = new ArrayList<T>();
+		try {
+			var found = EntityQuery.use(delegator)
+					.from(this.modelEntity)
+					.queryList();
+			if(found!=null) {
+				found.forEach(x -> { 
+					var val = createInstance();
+					this.mapper.fromGenericValue(val, x);
+					data.add(val);
+					
+				});
+			}
+		} catch (GenericEntityException e) {
+			Debug.log(e,e.getMessage(), MODULE);
+		}
+		return data;
+	}
+	
+	public void deleteById(Map<String,Object> id) {
+		
+		try {
+			delegator.removeByCondition(this.modelEntity, EntityCondition.makeCondition(id));
+		} catch (GenericEntityException e) {
+			
+			e.printStackTrace();
+		}
+		
+	}
+	
+	public T createOrUpdate(T value) {
+		GenericValue target = this.delegator.makeValue(this.modelEntity);
+		this.mapper.toGenericValue(target, value);
+		try {
+			this.delegator.createOrStore(target);
+			this.mapper.fromGenericValue(value, target);
+			return value;
+		} catch (GenericEntityException e) {
+			Debug.log(e,e.getMessage(), MODULE);
+		}
+		return null;
+	}
+	
+	public Delegator getDelegator() {
+		return this.delegator;
+	}
+}
+
+----
+
+===== b). Specific Repository
+ 
+[source,java]
+----
+package org.apache.ofbiz.example.repository;
+
+import org.apache.ofbiz.entity.Delegator;
+import org.apache.ofbiz.entity.repository.GenericRepository;
+import org.apache.ofbiz.example.domain.ExampleType;
+import org.apache.ofbiz.example.mappers.*;
+
+public class ExampleTypeRepository extends GenericRepository<ExampleType>{
+
+	public ExampleTypeRepository(Delegator delegator) {
+		super(ExampleType.class, "ExampleType", delegator, new ExampleTypeMapper());
+	}
+	//Here users can add as many functionalities as they wish.
+}
+
+----
+
+==== 4. Service Layer
+
+In service layer developer has two options
+
+*1. Not-recommended:* 
+ 
+** This layer can be left as its in OFBiz, and the developers 
+	 implement the business logic (Operates in POJO also) inside it.
+** Not-Flexible for testing.
+	
+*2. Recommended:* 
+
+** Isolate the business logic (Operations in POJO or whatever),
+and use OFBiz services only as orchestration service.
+
+** More Flexible for testing business logic.
+
+==== 5. Testing.
+
+Coming soon.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
